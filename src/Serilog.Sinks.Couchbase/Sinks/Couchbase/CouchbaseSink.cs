@@ -14,11 +14,12 @@
 
 using System;
 using System.Collections.Generic;
-using System.Threading.Tasks;
+using System.Linq;
+using Couchbase;
+using Couchbase.Configuration.Client;
+using Couchbase.Core;
 using Serilog.Debugging;
 using Serilog.Sinks.PeriodicBatching;
-using Couchbase.Extensions;
-using Couchbase.Management;
 using LogEvent = Serilog.Sinks.Couchbase.Data.LogEvent;
 
 namespace Serilog.Sinks.Couchbase
@@ -29,7 +30,7 @@ namespace Serilog.Sinks.Couchbase
     public class CouchbaseSink : PeriodicBatchingSink
     {
         readonly IFormatProvider _formatProvider;
-        readonly global::Couchbase.CouchbaseClient _couchbaseClient;
+        readonly IBucket _bucket;
 
         /// <summary>
         /// A reasonable default for the number of events posted in
@@ -59,17 +60,13 @@ namespace Serilog.Sinks.Couchbase
 
             if (bucketName == null) throw new ArgumentNullException("bucketName");
 
-            var config = new global::Couchbase.Configuration.CouchbaseClientConfiguration();
-            
-            foreach (var uri in couchbaseUriList)
-                config.Urls.Add(new Uri(uri));
-            config.Bucket = bucketName;
+            ClientConfiguration configuration = new ClientConfiguration
+            {
+                Servers = couchbaseUriList.Select(uri => new Uri(uri)).ToList(),
+            };
 
-            var cluster = new CouchbaseCluster(config);
-            Bucket bucket;
-            if (!cluster.TryGetBucket(bucketName, out bucket)) throw new InvalidOperationException("bucket '"+ bucketName  +"' does not exist");
-
-            _couchbaseClient = new global::Couchbase.CouchbaseClient(config);
+            var cluster = new Cluster(configuration);
+            _bucket = cluster.OpenBucket(bucketName);
 
             _formatProvider = formatProvider;
         }
@@ -85,7 +82,7 @@ namespace Serilog.Sinks.Couchbase
             base.Dispose(disposing);
 
             if (disposing)
-                _couchbaseClient.Dispose();
+                _bucket.Dispose();
         }
 
         /// <summary>
@@ -104,9 +101,9 @@ namespace Serilog.Sinks.Couchbase
             {
                 var key = Guid.NewGuid().ToString();
                 
-                var result = _couchbaseClient.StoreJson(Enyim.Caching.Memcached.StoreMode.Add, key, new LogEvent(logEvent, logEvent.RenderMessage(_formatProvider)));
+                IOperationResult<LogEvent> result = _bucket.Insert(key, new LogEvent(logEvent, logEvent.RenderMessage(_formatProvider)));
 
-                if (!result)
+                if (!result.Success)
                     SelfLog.WriteLine("Failed to store value");
             }
         }
